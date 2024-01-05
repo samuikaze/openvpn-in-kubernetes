@@ -1,0 +1,88 @@
+name: Build and push image, deploy to kubernetes
+
+on:
+  # To run actions, open comment two lines below
+  # push:
+  #   branches: [ "main" ]
+  # To allow PR run the actions, open comment two lines below
+  # pull_request:
+  #   branches: [ "main" ]
+
+jobs:
+  build:
+    name: Build
+    # You can change to self-hosted runner here.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install Docker Buildx
+        run: |
+          mkdir -p "$HOME/.docker/cli-plugins"
+          curl -SsL "https://github.com/docker/buildx/releases/download/v0.7.1/buildx-v0.7.1.linux-amd64" -o "$HOME/.docker/cli-plugins/docker-buildx"
+          chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+        with:
+          driver: docker
+      - name: Build the Docker image
+        # secrets.REGISTRY_URL declares the registry server
+        # vars.APP_NAME declares application name, this will be the image name
+        # github.sha used for version distinguish, it comes from Git commit hash
+        run: docker build . --file Dockerfile --tag ${{ secrets.REGISTRY_URL }}/${{ vars.APP_NAME }}:${{ github.sha }}
+      - name: Login to private registry
+        uses: docker/login-action@v2.1.0
+        with:
+          registry: ${{ secrets.REGISTRY_URL }}
+          # Username for registry
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          # Password for registry
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Build and push
+        uses: docker/build-push-action@v2
+        with:
+          context: ./
+          file: ./Dockerfile
+          builder: ${{ steps.buildx.outputs.name }}
+          push: true
+          tags: '${{ secrets.REGISTRY_URL }}/${{ vars.APP_NAME }}:${{ github.sha }}'
+
+  deploy:
+    name: Deploy
+    # It requires to run build first
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          curl -LO "https://dl.k8s.io/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+      - name: Set the Kubernetes context
+        uses: azure/k8s-set-context@v3
+        with:
+          method: service-account
+          # Kubernetes's api-server url
+          k8s-url: ${{ secrets.KUBERNETES_SERVER_URL }}
+          # Secret content which bound to the service account
+          k8s-secret: ${{ secrets.KUBERNETES_SECRETS }}
+      - name: Checkout source code
+        uses: actions/checkout@v3
+      - name: Deploy to the Kubernetes cluster
+        uses: azure/k8s-deploy@v4
+        with:
+          action: deploy
+          # If Kubernetes clusters are self-hosted, you need to set skip-tls-verify to true to ignore tls verify
+          skip-tls-verify: true
+          # Specific where the deployment file is located
+          # You can specific this to folder path, actions will deploy all yaml files in the folder
+          manifests: |
+            kubernetes/deployment.yaml
+          # Target deploy namespace
+          # Namespace where service account is located needs to be the same or the permission will be denied
+          namespace: <APPLICATION_TARGET_NAMESPACE>
+          # Declares what image uses to the deployment
+          # This is to replace the github.sha to the yaml file
+          images: |
+            ${{ secrets.REGISTRY_URL }}/${{ vars.APP_NAME }}:${{ github.sha }}

@@ -1,0 +1,25 @@
+
+module openvpnpolicy 1.0;
+
+require {
+	type cgroup_t;
+	type container_t;
+    type container_var_lib_t;
+	type iptables_t;
+	type unlabeled_t;
+	class dir { add_name create getattr ioctl link lock open read remove_name rename reparent rmdir search setattr unlink write };
+	class file { create open getattr setattr read write append rename link unlink ioctl lock };
+}
+
+#============= container_t ==============
+
+#!!!! This avc is allowed in the current policy
+allow container_t container_var_lib_t:dir { add_name create getattr ioctl link lock open read remove_name rename reparent rmdir search setattr unlink write };
+
+#!!!! This avc is allowed in the current policy
+allow container_t container_var_lib_t:file { create open getattr setattr read write append rename link unlink ioctl lock };
+
+#============= iptables_t ==============
+
+#!!!! This avc is allowed in the current policy
+allow iptables_t cgroup_t:dir { ioctl };

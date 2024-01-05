@@ -1,0 +1,3 @@
+kubernetes/deployment.*.yaml
+SELinux/*.mod
+SELinux/*.pp

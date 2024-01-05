@@ -1,0 +1,98 @@
+# Before issuing `kubectl apply` command,
+# replace the value contains "<" and ">" with correct value
+
+# namespace-deploy.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: <NAMESPACE_NAME>
+
+---
+# persistent-volume.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: openvpn-pv
+spec:
+  storageClassName: ""
+  capacity:
+    storage: <SIZE_OF_PV>
+  hostPath:
+    # You can use the path which is used in README file.
+    # Or you'll need to create and apply SELinux policy by yourself.
+    path: <PATH_TO_OPENVPN_FOLDER>
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: <NAMESPACE_NAME>
+    name: openvpn-pvc
+
+---
+# persistent-volume-claim.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openvpn-pvc
+  namespace: <NAMESPACE_NAME>
+spec:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # This value must less then or equal to persistent volumes total size
+      storage: <SIZE_OF_PVC>
+
+---
+# deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <OPENVPN_APP_NAME>
+  namespace: <NAMESPACE_NAME>
+  labels:
+    app_name: <OPENVPN_APP_NAME>
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app_name: <OPENVPN_APP_NAME>
+  template:
+    metadata:
+      labels:
+        app_name: <OPENVPN_APP_NAME>
+    spec:
+      volumes:
+        - name: openvpn-volume
+          persistentVolumeClaim:
+            claimName: openvpn-pvc
+      containers:
+        - name: <OPENVPN_APP_NAME>
+          image: docker.io/registry:latest
+          ports:
+            - containerPort: 1194
+              protocol: UDP
+          volumeMounts:
+            - name: openvpn-volume
+              mountPath: /etc/openvpn
+              subPath: registry
+          imagePullPolicy: Always
+
+---
+# service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: <OPENVPN_APP_NAME>
+  namespace: <NAMESPACE_NAME>
+spec:
+  ports:
+    - protocol: UDP
+      port: <PROXIED_PORT_NUMBER>
+      targetPort: 1911
+  selector:
+    app_name: <OPENVPN_APP_NAME>
+  type: ClusterIP
