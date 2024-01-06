@@ -71,7 +71,7 @@ spec:
             claimName: openvpn-pvc
       containers:
         - name: <OPENVPN_APP_NAME>
-          image: docker.io/registry:latest
+          image: $secrets.REGISTRY_URL/<OPENVPN_APP_NAME>:latest
           ports:
             - containerPort: 1194
               protocol: UDP

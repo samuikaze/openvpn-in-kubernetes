@@ -17,6 +17,10 @@
 
 在套用 SELinux 策略之前，你需要先決定要把 OpenVPN 的設定檔存在哪個資料夾中，本範例使用 `/var/lib/openvpn` 資料夾。
 
+> `/var/lib/openvpn` 是基礎資料夾，實際上容器會在此資料夾下再建立一個 `data` 資料夾，所有設定檔案都會在放在這邊
+
+> 使用指令建立資料夾時請建立到 `/var/lib/openvpn` 這層就好，裡面那層資料夾**必須**由容器自己建立，否則權限會不正確。
+
 > 如欲關閉 SELinux，請跳至下一大項
 
 ### 套用策略
@@ -78,7 +82,7 @@
     ```
 
 6. 打開 `allowpolicy.te` 與 `allowregistrypolicy.te` 做比較，看 `container_var_lib_t` 在 `allowpolicy.te` 檔中是什麼名稱，把它取代成該名稱後，進行步驟 2. 重新套用策略。
-7. 繼續建置 OpenVPN 的 config 檔案，若仍無法，重複 4. ~ 6. 步驟直到可以正常推送為止
+7. 繼續建置 OpenVPN 的 config 檔案，若仍無法，重複 4. ~ 6. 步驟直到可以正常建置為止
 
 ### 關閉 SELinux (不推薦)
 
@@ -87,7 +91,7 @@
 1. 執行指令 `sudo setenforce 0`
 2. 修改 `/etc/selinux/config`，修改 `SELINUX=disabled` 後存檔
 3. 重啟系統後完成。
-    > **極不推薦** 關閉 SELinux，這會讓伺服器暴露於危險之中，且[會讓 Dan Walsh 傷心](https://stopdisablingselinux.com/)。
+    > **極不推薦**關閉 SELinux，這會讓伺服器暴露於危險之中，且[會讓 Dan Walsh 傷心](https://stopdisablingselinux.com/)。
 
 ## 建立映像
 
@@ -118,23 +122,13 @@
 
     > 範例這邊建立在 `/var/lib/openvpn`
 
-2. 執行以下指令建立 OpenVPN 設定
+2. 先將以下內容儲存為 `deployment.yaml`，並將 `<` 與 `>` 包起來的變數更改為正確的值
 
-    > 若權限不足，請使用 `sudo` 執行
+    > 部署上去後容器必定起不來，這是正常現象，我們只是先讓容器把 `/var/lib/openvpn/data` 的資料夾建起來而已。
 
-    ```console
-    $ `podman run -v /var/lib/openvpn:/etc/openvpn --rm kylemanna/openvpn ovpn_genconfig -u udp://<YOUR_HOST_IP_OR_DOMAIN>`
-    ```
+    > 待補上 `openvpn.conf` 透過 Secret 或 ConfigMap 方式綁到容器路徑的說明
 
-3. 執行以下指令初始化憑證
-
-    > 若權限不足，請使用 `sudo` 執行
-
-    ```console
-    $ podman run -v /var/lib/openvpn:/etc/openvpn --rm -it kylemanna/openvpn ovpn_initpki
-    ```
-
-4. 將以下內容儲存為 `deployment.yaml`，並將 `<` 與 `>` 包起來的變數更改為正確的值
+    > 待查為何 Service 區塊缺少 UDP 設定就無法部署的問題
 
     ```yaml
     # Before issuing `kubectl apply` command,
@@ -159,7 +153,7 @@
       hostPath:
         # You can use the path which is used in README file.
         # Or you'll need to create and apply SELinux policy by yourself.
-        path: <PATH_TO_OPENVPN_FOLDER>
+        path: /var/lib/openvpn
       accessModes:
         - ReadWriteOnce
       persistentVolumeReclaimPolicy: Retain
@@ -217,11 +211,12 @@
                 #   add: ["NET_ADMIN"]
               ports:
                 - containerPort: 1194
-                  protocol: UDP
+                  # Or `UDP` if you want
+                  protocol: TCP
               volumeMounts:
                 - name: openvpn-volume
                   mountPath: /etc/openvpn
-                  subPath: registry
+                  subPath: data
               imagePullPolicy: Always
 
     ---
@@ -233,6 +228,10 @@
       namespace: <NAMESPACE_NAME>
     spec:
       ports:
+        # To use UDP protocol only, comment out TCP block
+        - protocol: TCP
+          port: <PROXIED_PORT_NUMBER>
+          targetPort: 1911
         - protocol: UDP
           port: <PROXIED_PORT_NUMBER>
           targetPort: 1911
@@ -242,15 +241,41 @@
 
     ```
 
-5. 執行以下指令將伺服器部署到 Kubernetes 上
+3. 執行以下指令將伺服器部署到 Kubernetes 上
 
     ```console
     $ kubectl apply -f deployment.yaml
     ```
 
+4. 看到容器啟動失敗後可以先將 Deployment 中的 `replicas` 數量降為 0 個
+
+5. 執行以下指令建立 OpenVPN 設定
+
+    > 若權限不足，請使用 `sudo` 執行
+
+    > 這邊會建立伺服器憑證的金鑰密碼，請**務必**保存好該密碼，否則後續的連線設定檔將會無法建置
+
+    > 憑證過期後可以透過這個指令簽發新的憑證，舊的憑證會先被刪除後，新的憑證才會被簽發
+
+    ```console
+    $ `podman run -v /var/lib/openvpn/data:/etc/openvpn --rm kylemanna/openvpn ovpn_genconfig -u udp://<YOUR_HOST_IP_OR_DOMAIN>`
+    ```
+
+6. 執行以下指令初始化憑證
+
+    > 若權限不足，請使用 `sudo` 執行
+
+    ```console
+    $ podman run -v /var/lib/openvpn/data:/etc/openvpn --rm -it kylemanna/openvpn ovpn_initpki
+    ```
+
+7. 若 4. 有將 `replicas` 降回 0 個，這邊請將 `replicas` 恢復成 1 個，若 4. 未設定 `replicas` 數量，這邊請直接透過 `Deployment` 的方式重起一個 Pod，這邊的 Pod 就會正常啟動了
+
 ## 設定 Ingress
 
-範例所使用的 Ingress 為 `nginx-ingress`，若非使用 `nginx-ingress` 者，需要自行研究如何開啟 `udp` 的 `1194` 連接埠。
+範例所使用的 Ingress 為 `nginx-ingress`，若非使用 `nginx-ingress` 者，需要自行研究如何開啟 `tcp` 或 `udp` 的 `1194` 連接埠。
+
+> 這邊推薦使用 `tcp` 協定，較不易遺失封包
 
 1. 將以下檔案儲存成 `ingress.yaml` 並將以 `<` 與 `>` 包起來的變數更改為正確的值
 
@@ -258,7 +283,8 @@
     apiVersion: v1
     kind: ConfigMap
     metadata:
-      name: nginx-ingress-controller-udp
+      # If you want to expose port on udp protocol, change this name to udp
+      name: nginx-ingress-controller-tcp
       namespace: nginx-ingress
     data:
       '1194': <NAMESPACE_NAME>/<APPLICATION_NAME>:1194
@@ -269,7 +295,8 @@
     ```yaml
     - appProtocol: https
       name: openvpn
-      protocol: UDP
+      # Or `UDP` if you want
+      protocol: TCP
       port: 1194
       targetPort: 1194
     ```
@@ -282,7 +309,9 @@
 
     > 若執行有權限問題，請使用 `sudo` 執行
 
-    > 若不需要設定密碼保護金鑰，請將 `nopass` 放到指令最後方
+    > 若不需要設定密碼保護金鑰，請將 `nopass` 放到指令最後方，私有 VPN 建議還是透過密碼保護金鑰比較安全
+
+    > 過程中第一次輝先設定連線設定檔的密碼，第二次之後才會詢問伺服器憑證的金鑰密碼，請務必不要搞錯
 
     ```console
     $ podman run -v /var/lib/openvpn/openvpn:/etc/openvpn --rm -it kylemanna/openvpn easyrsa build-client-full <CLIENT_NAME>
@@ -295,6 +324,14 @@
     ```console
     $ podman run -v /var/lib/openvpn/openvpn:/etc/openvpn --rm kylemanna/openvpn ovpn_getclient <CLIENT_NAME> > <FILENAME>.ovpn
     ```
+
+## 路由轉發設定
+
+> 說明待補
+
+## 壓縮問題
+
+> 說明待補
 
 ## 多重連線問題
 
