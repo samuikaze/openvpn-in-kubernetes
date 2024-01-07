@@ -69,12 +69,26 @@ spec:
         - name: openvpn-volume
           persistentVolumeClaim:
             claimName: openvpn-pvc
+      initContainers:
+        - name: enable-ip-forward
+          image: busybox:latest
+          securityContext:
+            privileged: true
+          command:
+          - /bin/sh
+          args:
+          - -c
+          - sysctl -w net.ipv4.ip_forward=1
       containers:
         - name: <OPENVPN_APP_NAME>
           image: $secrets.REGISTRY_URL/<OPENVPN_APP_NAME>:latest
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN"]
           ports:
             - containerPort: 1194
-              protocol: UDP
+              protocol: TCP
           volumeMounts:
             - name: openvpn-volume
               mountPath: /etc/openvpn
@@ -90,7 +104,7 @@ metadata:
   namespace: <NAMESPACE_NAME>
 spec:
   ports:
-    - protocol: UDP
+    - protocol: TCP
       port: <PROXIED_PORT_NUMBER>
       targetPort: 1911
   selector:

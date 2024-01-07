@@ -2,6 +2,8 @@
 
 以下會說明如何將 OpenVPN 架到 Kubernetes 中
 
+> 請注意，OpenVPN 的容器將會是 `特權 (priviledged)` 容器
+
 ## 開始前準備
 
 - Podman
@@ -126,9 +128,9 @@
 
     > 部署上去後容器必定起不來，這是正常現象，我們只是先讓容器把 `/var/lib/openvpn/data` 的資料夾建起來而已。
 
-    > 待補上 `openvpn.conf` 透過 Secret 或 ConfigMap 方式綁到容器路徑的說明
+    > 若你的 Service 曾經同時暴露 1194 為 TCP 和 UDP 連接埠，請先移除該 Service 宣告後再重新部署一次，否則會無法部署
 
-    > 待查為何 Service 區塊缺少 UDP 設定就無法部署的問題
+    > TCP 與 UDP 差別在於封包掉包問題，OpenVPN 雖然較推薦使用 UDP 協定，但這邊還是比較建議使用 TCP 協定，可以避免很多不必要的問題
 
     ```yaml
     # Before issuing `kubectl apply` command,
@@ -202,13 +204,23 @@
             - name: openvpn-volume
               persistentVolumeClaim:
                 claimName: openvpn-pvc
+          initContainers:
+            - name: enable-ip-forward
+              image: busybox:latest
+              securityContext:
+                privileged: true
+              command:
+              - /bin/sh
+              args:
+              - -c
+              - sysctl -w net.ipv4.ip_forward=1
           containers:
             - name: <OPENVPN_APP_NAME>
               image: <YOUR_REGISTRY_URI>/docker-openvpn:latest
               securityContext:
                 privileged: true
-                # capabilities:
-                #   add: ["NET_ADMIN"]
+                capabilities:
+                  add: ["NET_ADMIN"]
               ports:
                 - containerPort: 1194
                   # Or `UDP` if you want
@@ -228,13 +240,13 @@
       namespace: <NAMESPACE_NAME>
     spec:
       ports:
-        # To use UDP protocol only, comment out TCP block
+        # To use UDP protocol only, comment out TCP block and uncomment UDP block
         - protocol: TCP
           port: <PROXIED_PORT_NUMBER>
           targetPort: 1911
-        - protocol: UDP
-          port: <PROXIED_PORT_NUMBER>
-          targetPort: 1911
+        # - protocol: UDP
+        #   port: <PROXIED_PORT_NUMBER>
+        #   targetPort: 1911
       selector:
         app_name: <OPENVPN_APP_NAME>
       type: ClusterIP
@@ -257,25 +269,43 @@
 
     > 憑證過期後可以透過這個指令簽發新的憑證，舊的憑證會先被刪除後，新的憑證才會被簽發
 
-    ```console
-    $ `podman run -v /var/lib/openvpn/data:/etc/openvpn --rm kylemanna/openvpn ovpn_genconfig -u udp://<YOUR_HOST_IP_OR_DOMAIN>`
-    ```
+    > 若不是使用 `/var/lib/openvpn` 路徑當作 OpenVPN 放置設定的資料夾，請將此路徑取代為你自己的資料夾路徑
 
-6. 執行以下指令初始化憑證
+    - TCP 使用此指令:
+
+        ```console
+        $ `podman run -v /var/lib/openvpn/data:/etc/openvpn --rm kylemanna/openvpn ovpn_genconfig -u tcp://<YOUR_HOST_IP_OR_DOMAIN>`
+        ```
+
+    - UDP 使用此指令:
+
+        ```console
+        $ `podman run -v /var/lib/openvpn/data:/etc/openvpn --rm kylemanna/openvpn ovpn_genconfig -u udp://<YOUR_HOST_IP_OR_DOMAIN>`
+        ```
+
+6. 使用 TCP 作為連線協定者，這邊還需要打開 `/var/lib/openvpn/data/openvpn.conf` 檔案，找到 `proto tcp`，將其修改為 `proto tcp-server`
+
+    > 使用 UDP 作為連線協定者可以跳過此步驟
+
+    > 若不是使用 `/var/lib/openvpn` 路徑當作 OpenVPN 放置設定的資料夾，請將此路徑取代為你自己的資料夾路徑
+
+7. 執行以下指令初始化憑證
 
     > 若權限不足，請使用 `sudo` 執行
+
+    > 若不是使用 `/var/lib/openvpn` 路徑當作 OpenVPN 放置設定的資料夾，請將此路徑取代為你自己的資料夾路徑
 
     ```console
     $ podman run -v /var/lib/openvpn/data:/etc/openvpn --rm -it kylemanna/openvpn ovpn_initpki
     ```
 
-7. 若 4. 有將 `replicas` 降回 0 個，這邊請將 `replicas` 恢復成 1 個，若 4. 未設定 `replicas` 數量，這邊請直接透過 `Deployment` 的方式重起一個 Pod，這邊的 Pod 就會正常啟動了
+8. 若 4. 有將 `replicas` 降回 0 個，這邊請將 `replicas` 恢復成 1 個，若 4. 未設定 `replicas` 數量，這邊請直接透過 `Deployment` 的方式重起一個 Pod，這邊的 Pod 就會正常啟動了
 
 ## 設定 Ingress
 
 範例所使用的 Ingress 為 `nginx-ingress`，若非使用 `nginx-ingress` 者，需要自行研究如何開啟 `tcp` 或 `udp` 的 `1194` 連接埠。
 
-> 這邊推薦使用 `tcp` 協定，較不易遺失封包
+> 這邊推薦使用 `TCP` 協定，較不易遺失封包，`UDP` 設定方式與 TCP 類似，可以參考[官方文件說明](https://kubernetes.github.io/ingress-nginx/user-guide/exposing-tcp-udp-services/)
 
 1. 將以下檔案儲存成 `ingress.yaml` 並將以 `<` 與 `>` 包起來的變數更改為正確的值
 
@@ -301,7 +331,15 @@
       targetPort: 1194
     ```
 
-3. 完成
+3. 針對 `nginx-ingress` 的 `Deployment` 中的啟動參數 (args) 加入 `--tcp-services-configmap=ingress-nginx/nginx-ingress-controller-tcp`，如下範例:
+
+    ```yaml
+    args:
+        - /nginx-ingress-controller
+        - --tcp-services-configmap=ingress-nginx/nginx-ingress-controller-tcp
+    ```
+
+4. 完成
 
 ## 建立客戶端連線設定
 
@@ -311,10 +349,10 @@
 
     > 若不需要設定密碼保護金鑰，請將 `nopass` 放到指令最後方，私有 VPN 建議還是透過密碼保護金鑰比較安全
 
-    > 過程中第一次輝先設定連線設定檔的密碼，第二次之後才會詢問伺服器憑證的金鑰密碼，請務必不要搞錯
+    > 過程中第一次會先設定**連線設定檔的密碼**，第二次之後才會詢問**伺服器憑證的金鑰密碼**，每次密碼都要輸入兩次避免打錯，設定時請務必不要搞錯
 
     ```console
-    $ podman run -v /var/lib/openvpn/openvpn:/etc/openvpn --rm -it kylemanna/openvpn easyrsa build-client-full <CLIENT_NAME>
+    $ podman run -v /var/lib/openvpn/data:/etc/openvpn --rm -it kylemanna/openvpn easyrsa build-client-full <CLIENT_NAME>
     ```
 
 2. 匯出 ovpn 檔案
@@ -322,25 +360,97 @@
     > 若執行有權限問題，請使用 `sudo` 執行
 
     ```console
-    $ podman run -v /var/lib/openvpn/openvpn:/etc/openvpn --rm kylemanna/openvpn ovpn_getclient <CLIENT_NAME> > <FILENAME>.ovpn
+    $ podman run -v /var/lib/openvpn/data:/etc/openvpn --rm kylemanna/openvpn ovpn_getclient <CLIENT_NAME> > <FILENAME>.ovpn
     ```
+
+3. 若是使用 TCP 協定者，請打開匯出的 ovpn 檔案，找到 `remote <IP_OR_DOMAIN> 1194 tcp` 將 `tcp` 取代為 `tcp-client`
+4. 若暴露到外網的連接埠不是 `1194` 者，請打開匯出的 ovpn 檔案，找到 `remote <IP_OR_DOMAIN> 1194` 這行，把 `1194` 取代為暴露到外網的連接埠號碼
 
 ## 路由轉發設定
 
-> 說明待補
+路由轉發可由伺服器端與客戶端兩種方式設定，可以選擇其中一種方式設定即可
+
+### 設定路由轉發
+
+不論使用哪種設定，請都先打開 ovpn 檔案，滾到最下方找到 `redirect-gateway def1`，把它刪除或以 `#` 註解掉後，再進行下面其中一種設定:
+
+- 伺服器端設定
+
+    1. 打開 `/var/lib/openvpn/data/openvpn.conf`
+
+        > 若不是使用 `/var/lib/openvpn` 路徑當作 OpenVPN 放置設定的資料夾，請將此路徑取代為你自己的資料夾路徑
+
+    2. 在檔案最下方的 `### Push Configurations Below` 區塊最後面加上要轉發的路由，以下是指定 192.168.127.0/24 都要經過 VPN 閘道
+
+        > 請注意，不要將 `route-nopull` 推送到客戶端，否則這邊的設定都會無效
+
+        ```conf
+        push "route 192.168.127.0 255.255.255.0 vpn_gateway"
+        ```
+
+    3. 完成。
+
+- 客戶端設定
+
+    1. 打開 ovpn 檔案
+    2. 加上 `route <FORWARDING_IP> <SUBNET>`，以下是指定 192.168.127.0/24 都要經過 VPN 閘道
+
+        > 若不希望從伺服器收到路由轉發設定，請在整個 route 最後方加上 `route-nopull`
+
+        > 承上，千萬不要把 `route-nopull` 加在任何一條 route 設定之前，否則 OpenVPN 會在連線時報錯
+
+        ```conf
+        route 192.168.127.0 255.255.255.0 vpn_gateway
+        ```
+
+    3. 存檔完成
+
+### 測試
+
+- 使用 Windows 進行測試:
+
+    1. 打開 Powershell
+    2. 執行 `tracert <EXTERNAL_IP_OR_DOMAIN>`，其中 `<EXTERNAL_IP_OR_DOMAIN>` 為不轉發的路由，檢查每個跳點有沒有經過 VPN 的伺服器，沒有經過才算測試成功
+    3. 執行 `tracert <INTERNAL_IP_OR_DOMAIN>`，其中 `<INTERNAL_IP_OR_DOMAIN>` 為要轉發的路由，檢查每個跳點有沒有經過 VPN 的伺服器，有經過才算測試成功
+
+- 使用 Linux 進行測試
+
+    1. 打開終端機
+    2. 執行 `traceroute <EXTERNAL_IP_OR_DOMAIN>`，其中 `<EXTERNAL_IP_OR_DOMAIN>` 為不轉發的路由，檢查每個跳點有沒有經過 VPN 的伺服器，沒有經過才算測試成功
+    3. 執行 `traceroute <INTERNAL_IP_OR_DOMAIN>`，其中 `<INTERNAL_IP_OR_DOMAIN>` 為要轉發的路由，檢查每個跳點有沒有經過 VPN 的伺服器，有經過才算測試成功
+
+- 使用 Android 進行測試
+
+    1. 先安裝 `Termux` 應用程式
+    2. 打開 `Termux` 後執行 `pkg install traceroute` 安裝 `traceroute` 套件
+    3. 執行 `traceroute <EXTERNAL_IP_OR_DOMAIN>`，其中 `<EXTERNAL_IP_OR_DOMAIN>` 為不轉發的路由，檢查每個跳點有沒有經過 VPN 的伺服器，沒有經過才算測試成功
+    4. 執行 `traceroute <INTERNAL_IP_OR_DOMAIN>`，其中 `<INTERNAL_IP_OR_DOMAIN>` 為要轉發的路由，檢查每個跳點有沒有經過 VPN 的伺服器，有經過才算測試成功
+
+- Mac 使用者
+
+由於手邊沒有相關裝置，若要進行測試，方法同上面都是檢查不轉發的路由是不是直接走外網到目的地，要轉發的路由是不是會經過 VPN 的閘道才到目的地。
 
 ## 壓縮問題
 
-> 說明待補
+客戶端與伺服器端的壓縮設定必須相同，否則連線會失敗，又官方文件指出**壓縮會有資料加密的問題**，因此建議不要打開壓縮設定，若需打開，客戶端與伺服器端的設定請務必相同。
 
 ## 多重連線問題
 
 一個客戶端設定僅可有一個裝置連線，若有第二個裝置連線，前一個裝置的連線會被中斷，若服務架設於私有網路環境，這是比較推薦的設定。
 
+## 更新 OpenVPN 版本
+
+只要重新建置映像並重新部署到 Kubernetes 上，OpenVPN 版本就會被更新。
+
+## 不使用 Priviledged 容器
+
+可以參考[這篇解答](https://stackoverflow.com/a/70101383)的做法，在本機節點上先新增 `tun` 的網卡後，把這張網卡透過 volumeMount 的方式綁到容器裡，這樣一來就不需要啟用容器的 `priviledged` 模式了。
+
 ## 參考資料
 
 - [kylemanna/docker-openvpn](https://github.com/kylemanna/docker-openvpn)
 - [十分鐘 OpenVPN server 架設 – docker 手把手教學](https://koding.work/10-minutes-build-open-vpn-server/)
+- [OpenVPN Client in Kubernetes Pod](https://stackoverflow.com/a/70101383)
 - [How to Install OpenVPN on Docker {7 Steps}](https://phoenixnap.com/kb/openvpn-docker)
 - [卷 - hostPath](https://kubernetes.io/zh-cn/docs/concepts/storage/volumes/#hostpath)
 - [Can a PVC be bound to a specific PV?](https://stackoverflow.com/a/34323691)
@@ -349,3 +459,15 @@
 - [mknod: /dev/net/tun: Operation not permitted #498](https://github.com/kylemanna/docker-openvpn/issues/498#issuecomment-708613329)
 - [How to run a CRI-O container in priviliged mode ? #2363](https://github.com/cri-o/cri-o/issues/2363#issuecomment-492227812)
 - [PKI procedure: using a separate CA system](https://community.openvpn.net/openvpn/wiki/EasyRSA3-OpenVPN-Howto#PKIprocedure:usingaseparateCAsystem)
+- [Exposing TCP and UDP services](https://kubernetes.github.io/ingress-nginx/user-guide/exposing-tcp-udp-services/)
+- [Comments in OpenVPN client config files?](https://serverfault.com/a/679237)
+- [Overriding a pushed "route" in the client's config throws an error](https://openvpn.net/faq/overriding-a-pushed-route-in-the-clients-config-throws-an-error/)
+- [OpenVpn doesn't connect via TCP](https://superuser.com/a/1744267)
+- [OpenVPN - Getting started How-To](https://community.openvpn.net/openvpn/wiki/GettingStartedwithOVPN)
+- [Configure Linux as a Router (IP Forwarding)](https://www.linode.com/docs/guides/linux-router-and-ip-forwarding/)
+- [OpenVPN: 設定路由讓特定 IP Address 通過 VPN](https://blog.sakamoto.cat/she-ding-openvpn-lu-you-jiang-qi/)
+- [Setting up routing](https://openvpn.net/community-resources/setting-up-routing/)
+- [詳解-OpenVPN中的routing](https://cheaster.blogspot.com/2009/11/openvpnrouting.html)
+- [在 Kubernetes 叢集中使用 sysctl](https://kubernetes.io/zh-cn/docs/tasks/administer-cluster/sysctl-cluster/)
+- [Container has net.ipv4.ip_forward enabled but when run it is disabled](https://discuss.kubernetes.io/t/container-has-net-ipv4-ip-forward-enabled-but-when-run-it-is-disabled/21850)
+- [What Is the TUN Interface Used For?](https://www.baeldung.com/linux/tun-interface-purpose)
