@@ -372,7 +372,9 @@
 
 ### 設定路由轉發
 
-不論使用哪種設定，請都先打開 ovpn 檔案，滾到最下方找到 `redirect-gateway def1`，把它刪除或以 `#` 註解掉後，再進行下面其中一種設定:
+1. 不論使用哪種設定，請都先打開 ovpn 檔案，滾到最下方找到 `redirect-gateway def1`，把它刪除或以 `#` 註解掉。
+2. 若有聯外網需求，請務必打開 ovpn 檔案，增加 `pull-filter ignore "block-outside-dns"` 設定，外網才不會頻頻找不到網域。
+3. 完成上述前置作業後，再進行下面其中一種設定:
 
 - 伺服器端設定
 
@@ -428,11 +430,21 @@
 
 - Mac 使用者
 
-由於手邊沒有相關裝置，若要進行測試，方法同上面都是檢查不轉發的路由是不是直接走外網到目的地，要轉發的路由是不是會經過 VPN 的閘道才到目的地。
+    由於手邊沒有相關裝置，若要進行測試，方法同上面都是檢查不轉發的路由是不是直接走外網到目的地，要轉發的路由是不是會經過 VPN 的閘道才到目的地。
 
 ## 壓縮問題
 
 客戶端與伺服器端的壓縮設定必須相同，否則連線會失敗，又官方文件指出**壓縮會有資料加密的問題**，因此建議不要打開壓縮設定，若需打開，客戶端與伺服器端的設定請務必相同。
+
+如要在客戶端關閉壓縮，請打開 `ovpn` 檔案，並於上面區塊加上 `comp-lzo no`，類似於下面這個樣子
+
+```conf
+client
+nobind
+dev tun
+comp-lzo no
+remote-cert-tls server
+```
 
 ## 多重連線問題
 
@@ -471,3 +483,4 @@
 - [在 Kubernetes 叢集中使用 sysctl](https://kubernetes.io/zh-cn/docs/tasks/administer-cluster/sysctl-cluster/)
 - [Container has net.ipv4.ip_forward enabled but when run it is disabled](https://discuss.kubernetes.io/t/container-has-net-ipv4-ip-forward-enabled-but-when-run-it-is-disabled/21850)
 - [What Is the TUN Interface Used For?](https://www.baeldung.com/linux/tun-interface-purpose)
+- [How to disable comp-lzo and understand the logs?](https://forums.openvpn.net/viewtopic.php?t=33419)
