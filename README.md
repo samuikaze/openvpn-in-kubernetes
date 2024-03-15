@@ -222,9 +222,20 @@
                 capabilities:
                   add: ["NET_ADMIN"]
               ports:
-                - containerPort: 1194
+                - name: ovpn-port
+                  containerPort: 1194
                   # Or `UDP` if you want
                   protocol: TCP
+              startupProbe:
+                tcpSocket:
+                  port: ovpn-port
+                initialDelaySeconds: 6
+                periodSeconds: 10
+              livenessProbe:
+                tcpSocket:
+                  port: ovpn-port
+                initialDelaySeconds: 5
+                periodSeconds: 60
               volumeMounts:
                 - name: openvpn-volume
                   mountPath: /etc/openvpn
