@@ -7,6 +7,8 @@ on:
   # To allow PR run the actions, open comment two lines below
   # pull_request:
   #   branches: [ "main" ]
+  # or you want it to run manually, enable this lines below
+  # workflow_dispatch:
 
 jobs:
   build:
